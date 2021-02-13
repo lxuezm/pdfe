@@ -2,8 +2,8 @@
 %% synchronization, signal extraction, PAM4 decision and BER calculation.
 % Rx_DSP for PAM signal after direct detection
 % Lei Xue
-% July 2020
-% V1.1
+% Feb 2021
+% V1.2
 %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 clear all;
@@ -21,7 +21,8 @@ Fs = 4*Fb; % Desired Sample rate
 real_time=0;
 
 % Label of algorithms
-FFE_label = 1;
+FFE_label = 1;  %
+DFE_label = 0;
 Volterra_label = 0;
 MLSD_label = 0;
 
@@ -38,13 +39,12 @@ else
     %Rx_wfm = csvread('.\Sampled data\27_July_SOA2\C1-1dbm00000.csv'); 
     load('.\Sampled data\Receive sensitivity with SOA\250mA\rx-0dBm.mat') 
     Rx_wfm=data_temp1';%%11
-    Rx_wfm=Rx_wfm;
     Rx_wfm =Rx_wfm-mean(Rx_wfm);
 end 
 Rx_wfm = resample(Rx_wfm,Fs,Fd); % downsample只是整数倍的减少;resample to interger times of signal data rate
-% eyediagram of sampled signal
+%% eyediagram of resampled signal
 eyediagram(Rx_wfm(1:2^15),3*4);
-title('eyediagram of sampled signal');
+title('eyediagram of resampled signal');
 % H(Rx_wfm)
 %% spectrum of sampled signal
 % Ex_spec3 = Rx_wfm;
@@ -61,7 +61,7 @@ Nsym = 10;           % Filter span in symbols
 sps = 4;             % Samples per symbol
 txrolloff = 0.15;    % The compressed bandwidth is (1+)
 Hd = rcosdesign(txrolloff,Nsym,sps,'sqrt');% Square-root rasise cosin filter
-rxFilt = upfirdn(Rx_wfm,Hd,1,4);
+Rx_wfm_mf = upfirdn(Rx_wfm,Hd,1,4);
 
 %% Synchronization
 % Load original data
@@ -69,33 +69,36 @@ rxFilt = upfirdn(Rx_wfm,Hd,1,4);
   OriginalData = tx_sig*(-1);
 % OriginalData = tx_sig;
   SynSeed = upsample(OriginalData,1);
-  CorrelationResult = conv(rxFilt(1:end), conj(SynSeed(end:-1:1)));
+  CorrelationResult = conv(Rx_wfm_mf(1:end), conj(SynSeed(end:-1:1)));
   [Max,Index] = max(CorrelationResult);
-  ExtractedSignal = rxFilt(Index-length(OriginalData)+1:Index); 
+  ExtractedSignal = Rx_wfm_mf(Index-length(OriginalData)+1:Index); 
   figure
   plot(CorrelationResult);
  
 %% Downsampling to 1sps
 % save the data for Neural network training
  ExtractedSignal =downsample(ExtractedSignal,1);
-%  csvwrite('.\ml\Rxsignal2.csv',ExtractedSignal); 
+% csvwrite('.\ml\Rxsignal2.csv',ExtractedSignal); 
   
 %% Pre_equalization with 2 sps
-% DFE 
+% FFE 
 if FFE_label ==1
-   Rx_eq = FFE_Equalizer(ExtractedSignal, OriginalData, 'lms',117, 0.001,5);
+   Rx_FFE = FFE_Equalizer(ExtractedSignal, OriginalData, 'lms',117, 0.001,5);
 end
-csvwrite('.\ml\Rxsignal1.csv',Rx_eq); 
+if DFE_label ==1
+   Rx_DFE = DFE_Equalizer(ExtractedSignal, OriginalData, 'lms',117,20,0.001,5);
+end
+% csvwrite('.\ml\Rxsignal1.csv',Rx_eq); 
 %% Eyediargam after FFE
 H = comm.EyeDiagram('SampleRate',25E9,'SamplesPerSymbol',1,...
     'DisplayMode','2D color histogram',...
     'YLimits',[-4,4],...
     'OversamplingMethod' ,'Input interpolation','ShowGrid',0);
 eyeObj.ColorScale = 'Logarithmic';
-H(Rx_eq*(-1))
+H(Rx_FFE*(-1))
 % Volterra
 if Volterra_label ==1
-    Rx_eq = Volterra_Equalize(ExtractedSignal, OriginalSignal, 'lms', 10, 47, 0.1, 11, [], 5, [], false);
+    Rx_Volterra = Volterra_DFE_Equalizer(ExtractedSignal, OriginalSignal);
 end
 % MLSD
 if MLSD_label ==1
@@ -108,7 +111,7 @@ if MLSD_label ==1
     RxSym=RxSym';
 end
 
-%% Downsample to 1sps and BER caculation
+%% BER caculation
 [BitErrorRate, SymErrorRate, BitErrorNum,SymErrorNum] = Decision_Cal_Ber(Rx_eq,OriginalData,M);
 fprintf('Sample error number : %d \n', SymErrorNum);
 fprintf('Bit error number : %d \n', BitErrorNum);

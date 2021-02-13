@@ -1,5 +1,5 @@
-% Keysight 8195A
 % M-PAM waveform generator for the AWG with Pulse shaping and pre-equalization
+% Keysight 8195A
 % Lei Xue
 % June 2020
 % V1.2
@@ -10,18 +10,18 @@
 %% Initialization
 clear, close all
 clc
-modulation='PAM';
-% system parameters
-Fb = 25e9;  % Baud rate of the aimed signal
-Tb = 1/Fb;
-Fs = 4*Fb; % Original Sampling frequency 16
+modulation='PAM';%'Duobinary','External_load'
+% System parameters
+Fb = 50e9;  % Baud rate of the aimed signal
+Tb = 1/Fb;  % Symbol time interval
+Fs = 4*Fb;  % Original Sampling frequency 16
 Ts = 1/Fs;
-Nss = Fs/Fb;
+Nss = Fs/Fb;% Oversimpling rate
 num_symb = 2^16; %Number symbols
-Fs_awg = 100e9; % AWG sampling rate for resampling 60
+Fs_awg = 90e9; % AWG sampling rate for resampling
 
 % signal parameters
-M = 4; % M-PAM %Duobinary it is still 2!!!!!!!!!!
+M = 4;  % M-PAM %Duobinary it is still 2!!!!!!!!!!
 bits_per_sym = log2(M);
 PRBS_order = 'random';
 
@@ -29,7 +29,7 @@ PRBS_order = 'random';
 PulseShaping = 'RRC'; % 'Nyquist'|'Rcos' |'No_Shaping'|'RRC'
 txrolloff = 0.15;     % Rolloff factor 0.15
 % Pre-compensation initializaiton
-pre_comp = 'noPreComp'; % 'PreComp','noPreComp'
+pre_comp = 'Nolinear_THP'; % 'FFE','Linear_THP','NN','Nolinear_THP'
 %% Signal generation
 switch PRBS_order
     case 7
@@ -37,129 +37,144 @@ switch PRBS_order
     case 9
         load PRBS\PRBS_9
     case 15
-        load PRBS\PRBS_15.mat  
+        load PRBS\PRBS_15.mat
     case 19
-        load PRBS\PRBS_19      
+        load PRBS\PRBS_19
     case 'random'
         tx_data = randi([0 1],num_symb*bits_per_sym,1);
-%       save('tx_data.mat','tx_data');
+        %save('tx_data.mat','tx_data'); % the orignal bits should be saved for the fisrt time
 end
 %  rep_PRBS = floor(num_symb*bits_per_sym/(length(PRBS)));
 %  tx_data = repmat(PRBS,[rep_PRBS 1]);
-   L = length(tx_data)/bits_per_sym;
+L = length(tx_data)/bits_per_sym;
 
 switch modulation
     
     case 'Duobinary'
-    
-    tx_data = reshape(tx_data,bits_per_sym,L);
-    tx_data2(1)=0;
-    for i=2:length(tx_data)
-        tx_data2(i)=double(xor(tx_data2(i-1),tx_data(i-1)));
-    end
-    tx_data2=tx_data2';
-    tx_data3=tx_data2+[tx_data2(2:end);tx_data2(1)];
-    mods = modem.pammod('M',3,'SymbolOrder','bin');
-    tx_sig = modulate(mods,tx_data3');
-    
+        
+        tx_data = reshape(tx_data,bits_per_sym,L);
+        tx_data2(1)=0;
+        for i=2:length(tx_data)
+            tx_data2(i)=double(xor(tx_data2(i-1),tx_data(i-1)));
+        end
+        tx_data2=tx_data2';
+        tx_data3=tx_data2+[tx_data2(2:end);tx_data2(1)];
+        mods = modem.pammod('M',3,'SymbolOrder','bin');
+        tx_sig = modulate(mods,tx_data3');
+    case 'External_load'
+        
+        load('original_Data.mat');
+%         tx_sig=tx_sig-mean(tx_sig);
+%         tx_sig=(tx_sig-min(tx_sig))/(max(tx_sig)-min(tx_sig));
+        %csvwrite('.\50G pam4.vtmu_pack\Inputs\Original_Data.csv',tx_sig);
     otherwise
-    tx_data = reshape(tx_data,bits_per_sym,L);
-    mods = modem.pammod('M',M,'SymbolOrder','bin');
-    tx_sig = modulate(mods, bi2de(tx_data','left-msb'));
-    %save('original_data.mat','tx_sig');
-    load('original_Data.mat');
-    tx_sig=tx_sig-mean(tx_sig);
-    tx_sig=(tx_sig-min(tx_sig))/(max(tx_sig)-min(tx_sig));
-    csvwrite('.\50G pam4.vtmu_pack\Inputs\Original_Data.csv',tx_sig);    
+        tx_data = reshape(tx_data,bits_per_sym,L);
+        mods = modem.pammod('M',M,'SymbolOrder','bin');
+        tx_sig = modulate(mods, bi2de(tx_data','left-msb'));
+        %save('original_data.mat','tx_sig');
+        
 end
 tx_up = upsample(tx_sig,Nss); %  数据间不具备相关性所以spectrum是白噪声
 num = ones(Nss,1);
 den = 1;
-tx_wfm=filter(num,den,tx_up);%Idea rectangular pulse shaping
-%% Pre-compensation 
-% In the Rx side, downsample the data rate to AWG sampling rate, then use
+tx_wfm=filter(num,den,tx_up); %Idea rectangular pulse shaping
+%% Pre-compensation
+% Downsample the data rate to AWG sampling rate, then use
 % FFE to obtain and save the ffetaps
 switch pre_comp
-    case 'PreComp'
-         load('ffetaps.mat');
-         h_AWG_DACRate = reshape(w,1,[]);
-         length_prefix = floor(length(h_AWG_DACRate)/2);
-         tempX = [tx_sig(end -length_prefix+1:end );tx_sig;tx_sig(1:length_prefix)];
-         tx_wfm_precom = conv(tempX, fliplr(h_AWG_DACRate));
-         tx_wfm_precom(end -2*length_prefix+1:end) = [];
-         tx_wfm_precom(1:2*length_prefix) = [];
-         tx_wfm_precom = upsample(tx_wfm_precom,Nss);
+    case 'FFE'
+        load('ffetaps.mat');
+        h_AWG_DACRate = reshape(w,1,[]);
+        length_prefix = floor(length(h_AWG_DACRate)/2);
+        tempX = [tx_sig(end -length_prefix+1:end );tx_sig;tx_sig(1:length_prefix)];
+        tx_wfm_precom = conv(tempX, fliplr(h_AWG_DACRate));
+        tx_wfm_precom(end-2*length_prefix+1:end) = [];
+        tx_wfm_precom(1:2*length_prefix) = [];
+        tx_wfm_precom = upsample(tx_wfm_precom,Nss);
     case 'NN'
-         load('./ml/nn_pre.csv');
-         tx_wfm_precom=nn_pre;
-         %tx_wfm_precom =tx_wfm_precom-mean(tx_wfm_precom);
-         tx_wfm_precom = upsample(tx_wfm_precom,Nss);
+        load('./ml/nn_pre.csv');
+        tx_wfm_precom=nn_pre;
+        %tx_wfm_precom =tx_wfm_precom-mean(tx_wfm_precom);
+        tx_wfm_precom = upsample(tx_wfm_precom,Nss);
+    case 'Linear_THP'
+        %% THP precoding
+        load fb_filter.mat % load the taps from DFE
+        Thp_filter = fb_filter;
+        tx_wfm_precom=zeros(1,length(tx_sig));
+        Thp_filter_in =zeros(1,length(Thp_filter));
+        Bk=zeros(1,length(tx_sig));% The values of modulo operation
+        error=0; % init value of feedback output
+        for i=1:length(tx_sig)
+            Pre_mod = tx_sig(i)-error;
+            % modulo operation
+            Bk(i)=round(Pre_mod/8);
+            tx_wfm_precom(i) = Pre_mod-Bk(i)*8;
+            
+            Thp_filter_in(2:end)=Thp_filter_in(1:end-1);
+            Thp_filter_in(1)=tx_wfm_precom(i);
+            error=Thp_filter*Thp_filter_in.';
+        end
+        label_ffe =tx_sig-8*Bk;
+        %save('THP_out.mat','label_ffe') % save pre-coded sequence
+        tx_wfm_precom = upsample(tx_wfm_precom,Nss);
+    case 'Nolinear_THP'
+        load fb_volfilter.mat % load the taps from DFE in the receiver
+        Thp_volfilter = fb_volfilter;
+        tx_wfm_precom=zeros(1,length(tx_sig));
+        fb_filter_ip = zeros(1,ch1a);%the input of feedback volterra before caculation
+        Thp_volfilter_in =zeros(1,length(Thp_volfilter));
+        Bk=zeros(1,length(tx_sig));% The values of modulo operation
+        error=0; % init value of feedback output
+        for i=1:length(tx_sig)
+            Pre_mod = tx_sig(i)-error;
+            % modulo 2M operation
+            Bk(i)=round(Pre_mod/8);
+            tx_wfm_precom(i) = Pre_mod-Bk(i)*8;
+            % feedback update
+            fb_filter_ip(2:end)=fb_filter_ip(1:end-1);
+            fb_filter_ip(1)=tx_wfm_precom(i);
+            Thp_volfilter_in = Input_gen(fb_filter_ip,ch1a,ch2a);
+            error=Thp_volfilter*Thp_volfilter_in.';
+        end
+        label_ffe =tx_sig-8*Bk';
+        %save('THP_out.mat','label_ffe') % save pre-coded sequence
+        tx_wfm_precom = upsample(tx_wfm_precom',Nss);
     otherwise
-         tx_wfm_precom = tx_up;
+        tx_wfm_precom = tx_up;
 end
 
 %% Nyquist/Raise cosine pulse shaping
 switch PulseShaping
-      case 'RRC'
+    case 'RRC'
         Nsym = 10;           % Filter span in symbols
-        sps = 4;            % Samples per symbol
+        sps = Nss;            % Samples per symbol/upsampling rate
         Hd = rcosdesign(txrolloff,Nsym,sps,'sqrt');%square-root rasise cosin filter
-%       tx_wfm_precom_ps =conv(tx_wfm_precom,Hd);
+        %tx_wfm_precom_ps =conv(tx_wfm_precom,Hd);
         tx_wfm_precom_ps = upfirdn(tx_wfm_precom, Hd, 1);% the data length is len(Hd)+len(tx_sig)*NSs-1
-      case 'No_Shaping'
+    case 'No_Shaping'
         tx_wfm_precom_ps=tx_wfm;
 end
 
 %% Eyediagram before pulse shaping
 eyediagram(tx_wfm(1:2^15),3*Nss);
-title('eyediagram before pulse shaping');
+title('Eyediagram before pulse shaping');
 
 %% Eyediagram after pulse shaping
+% H = comm.EyeDiagram('SampleRate',100E9,'SamplesPerSymbol',4,...
+%     'DisplayMode','2D color histogram',...
+%     'YLimits',[-4,4],...
+%     'OversamplingMethod' ,'Input interpolation','ShowGrid',0);
+% eyeObj.ColorScale = 'Logarithmic';
+% H(tx_wfm_precom_ps)
 eyediagram(tx_wfm_precom_ps(3*Nss:2^15),5*Nss);
-title('eyediagram after pulse shaping');
+title('Eyediagram after pulse shaping');
 
 %% Resampling the signal with AWG sampling rate
 if Fs ~= Fs_awg
-     tx_wfm_precom_ps_re = resample(tx_wfm_precom_ps,Fs_awg,Fs);
-     %tx_wfm_Nf_re = downsample(tx_wfm_Nf,Fs/Fs_awg);
+    tx_wfm_precom_ps_re = resample(tx_wfm_precom_ps,Fs_awg,Fs);
 else
-     tx_wfm_precom_ps_re = tx_wfm_precom_ps;
+    tx_wfm_precom_ps_re = tx_wfm_precom_ps;
 end
-%% After channel distortion
-% fade_chan =  [1 0.234 0.407 0.815 0.407];% (PROAKIS B CHANNEL)
-% fade_chan = fade_chan/norm(fade_chan);
-% chan_len = length(fade_chan);
-% chan_op= conv(fade_chan,tx_wfm_precom_ps_re );
-
-%% Save the waveform in .MAT format
-file_prefix = 'PAM';
-BaudRT_int = floor(Fb/1e9);
-BaudRT_dec = (Fb/1e9-BaudRT_int)*10;
-awg_file = [num2str(M) file_prefix '_' num2str(BaudRT_int) 'p' num2str(BaudRT_dec) 'Gbaud' '_PRBS' num2str(PRBS_order) '_' PulseShaping '_' pre_comp]; % Baseline name for Tek AWG files
-
-Waveform_Name_1 = awg_file;
-Waveform_Data_1 =  tx_wfm_precom_ps_re; %already a double array
-Waveform_Sampling_Rate_1 = Fs_awg;      % Saving sampling rate
-%Waveform_Amplitude_1 = 0.300;          %and amplitude in V
-%save(['awg/' awg_file '.mat'], 'Waveform_*', '-v6');
-Waveform_Data_1=Waveform_Data_1-mean(Waveform_Data_1);
-Waveform_Data_1=(Waveform_Data_1-min(Waveform_Data_1))/(max(Waveform_Data_1)-min(Waveform_Data_1));
-%Waveform_Data_1 = repmat(Waveform_Data_1,2,1);
-a=floor(length(Waveform_Data_1)/256); % 数据前加一段0,使长度为128的整数倍
-b=(a+3)*256-length(Waveform_Data_1);
-c=zeros(b,1);
-Y=[c;Waveform_Data_1];
-Y =single(Y);
-csvwrite('.\50G pam4.vtmu_pack\Inputs\Txsignal.csv',Y);%有效信号作为同步
-XDelta= 1/Fs_awg
-%save(['.\AWG\' awg_file '.mat'], 'Y','XDelta', '-v6');
-
-%% load data to AWG
-ArbConfig = loadArbConfig_M8195A();
-Setting = loadSetting_M8195A(length(Y));
-IQdownload_M8195A(ArbConfig, Setting.fs,Y,  Setting.marker1, ...
-    Setting.marker2, Setting.segmNum, Setting.keepOpen, Setting.chMap,...
-    Setting.sequence, Setting.run,Setting.segmentLength,Setting.segmentOffset);
 
 %% Plot and compare signal before and after resampling
 % Plotting symbols
@@ -188,10 +203,10 @@ title('After re-sampling','FontWeight','bold');
 xlabel('first 200 samples');
 ylabel('Amplitude');
 
-% plot spectrum
+% Plot spectrum
 figure(9);
 data1 = double(tx_wfm);
-data2 = double(tx_wfm_precom); 
+data2 = double(tx_wfm_precom);
 data3 = double(tx_wfm_precom_ps);
 data4 = double(tx_wfm_precom_ps_re);
 
@@ -235,4 +250,31 @@ subplot(2,2,4);
 plot(Frek4./1e9,10*log10(FFT_Ex4.^2));
 title('Spectrum after Resampling');
 
+%% Save the waveform in .MAT format
+file_prefix = 'PAM';
+BaudRT_int = floor(Fb/1e9);
+BaudRT_dec = (Fb/1e9-BaudRT_int)*10;
+awg_file = [num2str(M) file_prefix '_' num2str(BaudRT_int) 'p' num2str(BaudRT_dec) 'Gbaud' '_PRBS' num2str(PRBS_order) '_' PulseShaping '_' pre_comp]; % Baseline name for Tek AWG files
+Waveform_Name = awg_file;
+Waveform_Data =  tx_wfm_precom_ps_re; %already a double array
+Waveform_Sampling_Rate = Fs_awg;      % Saving sampling rate
+%Waveform_Amplitude_1 = 0.300;          %and amplitude in V
+%save(['awg/' awg_file '.mat'], 'Waveform_*', '-v6');
+Waveform_Data=Waveform_Data-mean(Waveform_Data);
+Waveform_Data=(Waveform_Data-min(Waveform_Data))/(max(Waveform_Data)-min(Waveform_Data));
+a=floor(length(Waveform_Data)/256); % 数据前加一段0,使长度为128的整数倍
+b=(a+3)*256-length(Waveform_Data);
+c=zeros(b,1);
+Y=[c;Waveform_Data];
+Y =single(Y);
+csvwrite('.\Txsignal.csv',Y);%有效信号作为同步
+XDelta= 1/Fs_awg;
+%save(['.\AWG\' awg_file '.mat'], 'Y','XDelta', '-v6');
+
+%% load data to AWG
+ArbConfig = loadArbConfig_M8195A();
+Setting = loadSetting_M8195A(length(Y));
+IQdownload_M8195A(ArbConfig, Setting.fs,Y,  Setting.marker1, ...
+    Setting.marker2, Setting.segmNum, Setting.keepOpen, Setting.chMap,...
+    Setting.sequence, Setting.run,Setting.segmentLength,Setting.segmentOffset);
 
